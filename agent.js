@@ -41,16 +41,13 @@ var processingInterval        = undefined  // interval to get pending task
 var task_id                   = undefined  // task_id of currently processing task
 var errorTimeout              = undefined  // timeout if decoder takes too long
 var putFileInCloud            = undefined  // for switching cloud storage
-var getFileFromCloud          = undefined  // for switching cloud storage
 
 // AZURE currently not supported
 if (use_storage === 'aws') {
   putFileInCloud = putFileIntoS3
-  getFileFromCloud = getFileFromS3
 }
 else if (use_storage === 'azure') {
   putFileInCloud = putFileIntoAzure
-  getFileFromCloud = getFileFromCloud
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -67,36 +64,6 @@ AWS.config = new AWS.Config({
 })
 
 var s3 = (use_storage === 'aws') ? new AWS.S3() : undefined
-
-function getFileFromS3(bucket, key) {
-  // make request to AWS S3 to retrieve object
-  var params = {
-    Bucket: bucket,
-    Key: key,
-  }
-
-  var arr = params.Key.split("/")
-  var filename = arr[arr.length - 1]
-
-  return new Promise( (resolve, reject) => {
-    s3.getObject(params, (err, data) => {
-      if (err) {
-        console.log(err, err.stack)
-        sendFailureStatus("DOWNLOAD_ERROR")
-      }
-      else {
-        // handle received data
-        console.log(data)
-        var value = {
-          data: data.Body,
-          contentLength: data.ContentLength,
-          filename: filename,
-        }
-        resolve(value)
-      }
-    })
-  })
-}
 
 function putFileIntoS3(key, data) {
   return new Promise( (resolve, reject) => {
@@ -136,10 +103,6 @@ if (use_storage === 'azure')  {
     sharedKeyCredential
   )
   const containerClient = blobServiceClient.getContainerClient(azure_container)
-}
-
-function getFileFromAzure(endpoint) {
-
 }
 
 async function putFileIntoAzure() {
@@ -185,17 +148,13 @@ function getPendingTask(options) {
         // eg. Key      = "recording.wav"
 
         original_filename = task.data['filename']
+        converted_filename = original_filename
         task_id = task.task_id
-        const awsURL = new URL(task.data["cloud-link"])
-
-        var bucket = decodeURIComponent(awsURL.hostname.split('.')[0])
-        var key = decodeURIComponent(awsURL.pathname.slice(1).replace("+", "%20"))
-        // AWS S3 uses + for whitespace, but URI decodes %20 as whitespace
-        // AWS file upload causes "/" to be ":", so don't use "/" in filename
+        var cloud_url = task.data["cloud-link"]
 
         isProcessing = true
 
-        getFileFromCloud(bucket, key).then( val => {
+        getFileFromURL(cloud_url, original_filename).then( val => {
           storeAudioFile(val)
         })
       }
@@ -241,10 +200,10 @@ function sendSuccessStatus(cloud_link) {
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
     task_id = undefined
-    console.log(`Success status ${status} sent to TaskController.`)
+    console.log(`Success status sent to TaskController.`)
   })
   .catch(error => {
-    console.log(`Error sending success status ${status} to TaskController: ${error}`)
+    console.log(`Error sending success status to TaskController: ${error}`)
   })
 }
 
@@ -261,7 +220,8 @@ function sendFailureStatus(error_message) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    console.log(`Failure status ${status} sent to TaskController.`)
+    task_id = undefined
+    console.log(`Failure status sent to TaskController.`)
   })
   .catch(error => {
     console.log(`Error sending failure status ${error_message} to TaskController: ${error}`)
@@ -280,6 +240,26 @@ function initialize() {
   processingInterval = setInterval(()=>{
     if (!isProcessing) getPendingTask()
   }, intervalPeriod)
+}
+
+function getFileFromURL(url, dest) {
+  return new Promise((resolve, reject) => {
+    axios.get(url)
+    .then(response => {
+      var content_length = Number(response.headers["content-length"])
+      var data = response.data
+      var val = {
+        filename: dest,
+        contentLength: content_length,
+        data: data,
+      }
+      resolve(val)
+    })
+    .catch(error => {
+      console.log(err, err.stack)
+      sendFailureStatus("DOWNLOAD_ERROR")
+    })
+  })
 }
 
 async function storeAudioFile(val) {
@@ -308,7 +288,7 @@ async function storeAudioFile(val) {
         sendFailureStatus("SAVING_FILE_ERROR")
       }
       else{
-        console.log("Writing data to file successful.")
+        console.log(`Writing ${contentLength} bytes to file successful.`)
       }
     })
   }
@@ -358,7 +338,7 @@ function cleanUpDecoderFiles() {
 async function getAvailableSpace() {
   return new Promise(async (resolve) => {
     var { available } = await disk.check(root)
-    // console.log(`Availble space: ${available}`)
+    console.log(`Local Disk availble space: ${available} bytes`)
     resolve(available)
   })
 }
