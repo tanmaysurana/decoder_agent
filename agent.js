@@ -80,11 +80,7 @@ function putFileIntoS3(key, data) {
       // data.Bucket
       // data.Key
       console.log(`${key} uploaded to AWS bucket ${aws_bucket}`)
-      resolve({
-        cloud_link: data.Location,
-        bucket: data.Bucket,
-        key: data.Key
-      })
+      resolve(data.Location)
     })
   })
 }
@@ -94,22 +90,35 @@ function putFileIntoS3(key, data) {
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// Azure Storage NOT IN USE CURRENTLY
+// Azure Storage
 ////////////////////////////////////////////////////////////////////////////////
+var containerClient = undefined
+
 if (use_storage === 'azure')  {
   const sharedKeyCredential = new StorageSharedKeyCredential(azure_account, azure_account_key)
   const blobServiceClient = new BlobServiceClient(
     `https://${azure_account}.blob.core.windows.net`,
     sharedKeyCredential
   )
-  const containerClient = blobServiceClient.getContainerClient(azure_container)
+  containerClient = blobServiceClient.getContainerClient(azure_container)
 }
 
-async function putFileIntoAzure() {
-  const blockBlobClient = containerClient.getBlockBlobClient("blobName")
-  const data = 'Hello, World'
-  const uploadBlobResponse = await blockBlobClient.upload(data, data.length)
-  console.log(uploadBlobResponse)
+
+async function putFileIntoAzure(key, data) {
+  return new Promise( (resolve, reject) => {
+
+    const blockBlobClient = containerClient.getBlockBlobClient(key)
+
+    var objectURL = path.join(containerClient.url, encodeURIComponent(key))
+
+    const uploadBlobResponse = blockBlobClient.upload(data, Buffer.byteLength(data))
+    uploadBlobResponse.then(val => {
+      console.log(`${key} uploaded to Azure storage container ${containerClient.containerName}`)
+      resolve(objectURL)
+    }).catch(error => {
+      console.log(`Error during uploading to Azure: ${error}`)
+    })
+  })
 }
 ////////////////////////////////////////////////////////////////////////////////
 // end of Azure Storage
@@ -256,7 +265,7 @@ function getFileFromURL(url, dest) {
       resolve(val)
     })
     .catch(error => {
-      console.log(err, err.stack)
+      console.log(error)
       sendFailureStatus("DOWNLOAD_ERROR")
     })
   })
@@ -374,7 +383,7 @@ app.post('/status', (req, res) => {
   // upload transcription to AWS S3
   if (status === "DONE") {
     sendTranscriptionFiles(putFileInCloud).then( val => {
-      sendSuccessStatus(val.cloud_link)
+      sendSuccessStatus(val)
       cleanUpDecoderFiles()
     })
   }
