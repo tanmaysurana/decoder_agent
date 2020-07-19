@@ -425,8 +425,4 @@ app.listen(port, () => {
 ////////////////////////////////////////////////////////////////////////////////
 // execution starts here
 ////////////////////////////////////////////////////////////////////////////////
-// initialize()
-
-getFileFromURL("https://speechlabonlineresourceg.blob.core.windows.net/speechlab-public/5f13bd1bb6d18b0029b60990.wav", "5f13bd1bb6d18b0029b60990.wav").then((val)=>{
-  storeAudioFile(val)
-})
+initialize()
