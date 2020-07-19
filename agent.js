@@ -253,8 +253,13 @@ function initialize() {
 
 function getFileFromURL(url, dest) {
   return new Promise((resolve, reject) => {
-    axios.get(url)
+    axios({
+      method: 'get',
+      url: url,
+      responseType: 'stream'
+    })
     .then(response => {
+
       var content_length = Number(response.headers["content-length"])
       var data = response.data
       var val = {
@@ -291,15 +296,9 @@ async function storeAudioFile(val) {
     cleanUpDecoderFiles()
   }
   else {
-    fs.writeFile(`input/${filename}`, data, (err) => {
-      if (err) {
-        console.log(`Writing data to file unsuccessful: ${err}`)
-        sendFailureStatus("SAVING_FILE_ERROR")
-      }
-      else{
-        console.log(`Writing ${contentLength} bytes to file successful.`)
-      }
-    })
+    var file = fs.createWriteStream(`input/${filename}`)
+    data.pipe(file)
+    console.log(`Writing ${contentLength} bytes to file successful.`)
   }
 }
 
@@ -426,4 +425,8 @@ app.listen(port, () => {
 ////////////////////////////////////////////////////////////////////////////////
 // execution starts here
 ////////////////////////////////////////////////////////////////////////////////
-initialize()
+// initialize()
+
+getFileFromURL("https://speechlabonlineresourceg.blob.core.windows.net/speechlab-public/5f13bd1bb6d18b0029b60990.wav", "5f13bd1bb6d18b0029b60990.wav").then((val)=>{
+  storeAudioFile(val)
+})
