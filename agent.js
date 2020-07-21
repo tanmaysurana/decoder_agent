@@ -5,6 +5,7 @@ const os = require('os')
 const fs = require('fs')
 const path = require('path')
 const AdmZip = require('adm-zip')
+const { getAudioDurationInSeconds } = require('get-audio-duration')
 
 const AWS = require("aws-sdk")
 const {BlobServiceClient, StorageSharedKeyCredential} = require("@azure/storage-blob")
@@ -25,22 +26,24 @@ const azure_container         = process.env.AZURE_CONTAINER
 
 const use_storage             = process.env.USE_STORAGE  // aws | azure (azure currently not supported)
 
+const remoteIPv4Url           = 'http://ipv4bot.whatismyipaddress.com/'  // to get external ip
 const taskControllerEndpoint  = process.env.TASKCONTROLLER_URL
-const intervalPeriod          = 10000 // milliseconds
+const intervalPeriod          = process.env.POLLING_PERIOD || 10000 // milliseconds
 const port                    = process.env.PORT
 const root = os.platform()  === 'win32' ? 'c:' : '/'
 const num_bytes_for_buffer    = 100000  // 100kb, buffer space for transcription
-const worker_queue            = process.env.WORKER_QUEUE  // default value is 'normal'
-const worker_name             =`${os.hostname}-${process.pid}`
-const worker_language         = process.env.WORKER_LANGUAGE // english | mandarin | malay
+const worker_queue            = process.env.WORKER_QUEUE      // default value is 'normal'
+var worker_name               = `ipv4address-${os.hostname}`  // ipv4address will be assigned below
+const worker_language         = process.env.WORKER_LANGUAGE   // english | mandarin | malay
 
 var original_filename         = undefined  // filename received from taskcontroller
 var converted_filename        = undefined  // filename after decoder renames (if renaming is enabled)
 var isProcessing              = false      // flag to see if currently decoding
 var processingInterval        = undefined  // interval to get pending task
 var task_id                   = undefined  // task_id of currently processing task
-var errorTimeout              = undefined  // timeout if decoder takes too long
+var decoderStartInterval      = undefined  // interval to check if decoder starts
 var putFileInCloud            = undefined  // for switching cloud storage
+var retries_count             = 0
 
 // AZURE currently not supported
 if (use_storage === 'aws') {
@@ -50,6 +53,7 @@ else if (use_storage === 'azure') {
   putFileInCloud = putFileIntoAzure
 }
 
+getExternalIPv4()  // change worker_name to reflect external ipv4 address
 ////////////////////////////////////////////////////////////////////////////////
 // end of global variables
 ////////////////////////////////////////////////////////////////////////////////
@@ -79,7 +83,7 @@ function putFileIntoS3(key, data) {
       // data.ETag
       // data.Bucket
       // data.Key
-      console.log(`${key} uploaded to AWS bucket ${aws_bucket}`)
+      console.log(`TRANSCRIPT: ${key} uploaded to AWS bucket ${aws_bucket}`)
       resolve(data.Location)
     })
   })
@@ -103,7 +107,6 @@ if (use_storage === 'azure')  {
   containerClient = blobServiceClient.getContainerClient(azure_container)
 }
 
-
 async function putFileIntoAzure(key, data) {
   return new Promise( (resolve, reject) => {
 
@@ -113,7 +116,7 @@ async function putFileIntoAzure(key, data) {
 
     const uploadBlobResponse = blockBlobClient.upload(data, Buffer.byteLength(data))
     uploadBlobResponse.then(val => {
-      console.log(`${key} uploaded to Azure storage container ${containerClient.containerName}`)
+      console.log(`TRANSCRIPT: ${key} uploaded to Azure storage container ${containerClient.containerName}`)
       resolve(objectURL)
     }).catch(error => {
       console.log(`Error during uploading to Azure: ${error}`)
@@ -148,29 +151,16 @@ function getPendingTask(options) {
     // if response === null, no pending task
     if (response.data.task) {
       var task = response.data.task
-      console.log("Task received.")
-      console.log(response.data)
       if (task.queue === worker_queue) {
-
-        // eg. endpoint = "test-bucket-123abc-test.s3-ap-southeast-1.amazonaws.com/recording.wav"
-        // eg. Bucket   = "test-bucket-123abc-test"
-        // eg. Key      = "recording.wav"
-
-        original_filename = task.data['filename']
-        converted_filename = original_filename
-        task_id = task.task_id
-        var cloud_url = task.data["cloud-link"]
-
-        isProcessing = true
-
-        getFileFromURL(cloud_url, original_filename).then( val => {
-          storeAudioFile(val)
-        })
+        console.log("Task received.")
+        console.log(response.data)
+        retries_count = 0
+        handleTask(task)
       }
     }
   })
   .catch(error => {
-    console.log(`Error checking for pending task: ${error}`)
+    console.log(`TASK_FIELDS_ERROR: ${error}`)
     sendFailureStatus("TASK_FIELDS_ERROR")
   })
 }
@@ -196,7 +186,6 @@ function sendStatus(status) {
 function sendSuccessStatus(cloud_link) {
 
   isProcessing = false
-  clearTimeout(errorTimeout)
 
   var params = {
     type: "success",
@@ -219,7 +208,7 @@ function sendSuccessStatus(cloud_link) {
 function sendFailureStatus(error_message) {
 
   isProcessing = false
-  clearTimeout(errorTimeout)
+  clearInterval(decoderStartInterval)
 
   var params = {
     type: "error",
@@ -251,6 +240,43 @@ function initialize() {
   }, intervalPeriod)
 }
 
+function handleTask(task) {
+
+  original_filename = task.data['filename']
+  converted_filename = original_filename
+  task_id = task.task_id
+  var cloud_url = task.data["cloud-link"]
+
+  isProcessing = true
+
+  var meta_info = {
+    filename: original_filename,
+    formats: task.data.formats,
+    numChn: task.data.numChn,
+    type: task.data.type
+  }
+
+  // interval is to check if decoding starts and retries
+  decoderStartInterval = setInterval(() => {
+    cleanUpDecoderFiles()
+    if (retries_count < 2) {
+      retries_count += 1
+      getFileFromURL(cloud_url, original_filename).then( val => {
+        storeMetadataFile(meta_info)
+        storeAudioFile(val)
+      })
+    }
+    else {
+      sendFailureStatus("DECODER_DID_NOT_START")
+    }
+  }, 30000)  // 30 seconds to decoder to start
+
+  getFileFromURL(cloud_url, original_filename).then( val => {
+    storeMetadataFile(meta_info)
+    storeAudioFile(val)
+  })
+}
+
 function getFileFromURL(url, dest) {
   return new Promise((resolve, reject) => {
     axios({
@@ -270,7 +296,7 @@ function getFileFromURL(url, dest) {
       resolve(val)
     })
     .catch(error => {
-      console.log(error)
+      console.log(`DOWNLOAD_ERROR: ${error}`)
       sendFailureStatus("DOWNLOAD_ERROR")
     })
   })
@@ -284,13 +310,7 @@ async function storeAudioFile(val) {
   var contentLength = val.contentLength
   var filename = val.filename
 
-  errorTimeout = setTimeout(() => {
-    sendFailureStatus("DECODING_TIMEOUT")
-    cleanUpDecoderFiles()
-  }, contentLength*1.5)
-
   if (contentLength + num_bytes_for_buffer > avail) {
-    console.log("Not enough disk space.")
     // inform about failed decoding
     sendFailureStatus("LOCALDISK_FULL")
     cleanUpDecoderFiles()
@@ -298,8 +318,62 @@ async function storeAudioFile(val) {
   else {
     var file = fs.createWriteStream(`input/${filename}`)
     data.pipe(file)
-    console.log(`Writing ${contentLength} bytes to file successful.`)
+    console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
+
+    // file.on('finish', () => {
+    //   getAudioDurationInSeconds(`input/${filename}`)
+    //   .then(duration => {
+    //     console.log(`Audio file duration: ${duration} seconds`)
+    //
+    //     var timeout_duration = (duration < 90) ? 180 : duration*2
+    //     console.log(`Timeout set to ${timeout_duration} seconds`)
+    //     decoderStartInterval = setInterval(() => {
+    //       cleanUpDecoderFiles()
+    //       if (retries_count < 2){
+    //         retries_count += 1
+    //
+    //       }
+    //       else {
+    //         sendFailureStatus("DECODING_TIMEOUT")
+    //       }
+    //     }, timeout_duration*1000)  // seconds to milliseconds
+    //   })
+    // })
   }
+}
+
+function storeMetadataFile(val) {
+
+  var name = path.parse(val.filename).name
+
+  var participants = []
+
+  for (var i=1; i < val.numChn+1; i++) {
+    participants.push({
+      "ChannelId": i,
+      "recorder": 1,
+      "UserId": i,
+      "FarTalkMic": (val.type === "fartalk" || val.type === "boundary"),
+      "Transcribe": true,
+    })
+  }
+  if (participants || val.formats) {
+    var data = {
+      "Participants": participants,
+      "output": val.formats.map(val=>val.replace('.',''))
+    }
+
+    fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
+      if (error) {
+        console.log(`Error creating metadata file. ${error}`)
+      }
+      console.log(`FILE: Metadata file for ${name} saved.`)
+    })
+  }
+  else {
+    console.log(`FILE: Metadata file for ${name} was not created.`)
+  }
+
 }
 
 function sendTranscriptionFiles(callback) {
@@ -325,30 +399,50 @@ function cleanUpDecoderFiles() {
   // remove audio file
   fs.unlink(`./input/${converted_filename}`, (error) => {
     if (error) console.log(`Error during removal of input file: ${error}`)
-    else console.log(`Input file ${converted_filename} removed.`)
+    else console.log(`FILE: Input file ${converted_filename} removed.`)
   })
 
   var name = path.parse(converted_filename).name
 
+  // remove metadata file
+  fs.unlink(`./input/${name}.txt`, (error) => {
+    if (error) console.log(`Error during removal of metadata file: ${error}`)
+    else console.log(`FILE: Metadata file ${name} removed.`)
+  })
+
   // remove details files
   fs.rmdir(`./details/${name}`, {recursive: true}, (error) => {
     if (error) console.log(`Error during removal of details files: ${error}`)
-    else console.log(`Details files for ${name} removed.`)
+    else console.log(`FILE: Details files for ${name} removed.`)
   })
 
   // remove transcription files
   fs.rmdir(`./output/${name}`, {recursive: true}, (error) => {
     if (error) console.log(`Error during removal of output files: ${error}`)
-    else console.log(`Output files for ${name} removed.`)
+    else console.log(`FILE: Output files for ${name} removed.`)
   })
 }
 
 async function getAvailableSpace() {
   return new Promise(async (resolve) => {
     var { available } = await disk.check(root)
-    console.log(`Local Disk availble space: ${available} bytes`)
+    console.log(`Local disk availble space: ${available} bytes`)
     resolve(available)
   })
+}
+
+// Try getting an external IPv4 address.
+async function getExternalIPv4(debug = false) {
+  try {
+    const response = await axios.get(remoteIPv4Url);
+    if (response && response.data) {
+      worker_name = `${response.data}-${os.hostname}`;
+    }
+  } catch (error) {
+    if (debug) {
+      console.log(error);
+    }
+  }
 }
 ////////////////////////////////////////////////////////////////////////////////
 // end of internal function declarations
@@ -379,12 +473,16 @@ app.post('/status', (req, res) => {
   console.log(`DECODER: ${converted_filename} is ${status}.`)
   sendStatus(status)
 
+  status = status.split(" ")[0]
   // upload transcription to AWS S3
   if (status === "DONE") {
     sendTranscriptionFiles(putFileInCloud).then( val => {
       sendSuccessStatus(val)
       cleanUpDecoderFiles()
     })
+  }
+  else if (status === "STARTING") {
+    clearInterval(decoderStartInterval)
   }
 })
 
@@ -393,9 +491,9 @@ app.post('/error', (req, res) => {
 
   res.send("Error received.")
 
-  console.log(body)
+  var error = body.status
 
-  sendFailureStatus("DECODE_ERROR")
+  sendFailureStatus(error)
   cleanUpDecoderFiles()
 })
 
