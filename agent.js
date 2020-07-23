@@ -36,6 +36,7 @@ const worker_queue            = process.env.WORKER_QUEUE      // default value i
 var worker_name               = `ipv4address-${os.hostname}`  // ipv4address will be assigned below
 const worker_language         = process.env.WORKER_LANGUAGE   // english | mandarin | malay
 
+const supported_extensions    = ["wav","mp3","mp4","aac","ac3","aiff","amr","flac","m4a","ogg","opus","wma","ts"]
 var original_filename         = undefined  // filename received from taskcontroller
 var converted_filename        = undefined  // filename after decoder renames (if renaming is enabled)
 var isProcessing              = false      // flag to see if currently decoding
@@ -160,8 +161,8 @@ function getPendingTask(options) {
     }
   })
   .catch(error => {
-    console.log(`TASK_FIELDS_ERROR: ${error}`)
-    sendFailureStatus("TASK_FIELDS_ERROR")
+    console.log(`POLLING_TASK_ERROR: ${error}`)
+    sendFailureStatus("POLLING_TASK_ERROR")
   })
 }
 
@@ -185,8 +186,6 @@ function sendStatus(status) {
 
 function sendSuccessStatus(cloud_link) {
 
-  isProcessing = false
-
   var params = {
     type: "success",
     worker: worker_name,
@@ -197,18 +196,17 @@ function sendSuccessStatus(cloud_link) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    task_id = undefined
     console.log(`Success status sent to TaskController.`)
   })
   .catch(error => {
     console.log(`Error sending success status to TaskController: ${error}`)
   })
+
+  task_id = undefined
+  isProcessing = false
 }
 
 function sendFailureStatus(error_message) {
-
-  isProcessing = false
-  clearInterval(decoderStartInterval)
 
   var params = {
     type: "error",
@@ -218,12 +216,15 @@ function sendFailureStatus(error_message) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    task_id = undefined
     console.log(`Failure status sent to TaskController.`)
   })
   .catch(error => {
     console.log(`Error sending failure status ${error_message} to TaskController: ${error}`)
   })
+
+  task_id = undefined
+  isProcessing = false
+  clearInterval(decoderStartInterval)
 }
 ////////////////////////////////////////////////////////////////////////////////
 // end of task controller communication functions declarations
@@ -255,26 +256,33 @@ function handleTask(task) {
     numChn: task.data.numChn,
     type: task.data.type
   }
+  var ext = path.parse(original_filename).ext.replace(".","")
 
-  // interval is to check if decoding starts and retries
-  decoderStartInterval = setInterval(() => {
-    cleanUpDecoderFiles()
-    if (retries_count < 2) {
-      retries_count += 1
-      getFileFromURL(cloud_url, original_filename).then( val => {
-        storeMetadataFile(meta_info)
-        storeAudioFile(val)
-      })
-    }
-    else {
-      sendFailureStatus("DECODER_DID_NOT_START")
-    }
-  }, 30000)  // 30 seconds to decoder to start
+  if (supported_extensions.includes(ext)) {
+    // interval is to check if decoding starts and retries
+    decoderStartInterval = setInterval(() => {
+      cleanUpDecoderFiles()
+      if (retries_count < 2) {
+        retries_count += 1
+        getFileFromURL(cloud_url, original_filename).then( val => {
+          storeMetadataFile(meta_info)
+          storeAudioFile(val)
+        })
+      }
+      else {
+        sendFailureStatus("DECODER_DID_NOT_START")
+      }
+    }, 30000)  // 30 seconds to decoder to start
 
-  getFileFromURL(cloud_url, original_filename).then( val => {
-    storeMetadataFile(meta_info)
-    storeAudioFile(val)
-  })
+    getFileFromURL(cloud_url, original_filename).then( val => {
+      storeMetadataFile(meta_info)
+      storeAudioFile(val)
+    })
+  }
+  else {
+    sendFailureStatus("FILE_EXTENSION_NOT_SUPPORTED")
+  }
+
 }
 
 function getFileFromURL(url, dest) {
@@ -357,10 +365,10 @@ function storeMetadataFile(val) {
       "Transcribe": true,
     })
   }
-  if (participants || val.formats) {
+  if (val.numChn || val.formats) {
     var data = {
       "Participants": participants,
-      "output": val.formats.map(val=>val.replace('.',''))
+      "output": (val.formats) ? val.formats.map(val=>val.replace('.','')) : undefined
     }
 
     fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
