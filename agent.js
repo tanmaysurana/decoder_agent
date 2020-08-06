@@ -41,10 +41,8 @@ var original_filename         = undefined  // filename received from taskcontrol
 var converted_filename        = undefined  // filename after decoder renames (if renaming is enabled)
 var isProcessing              = false      // flag to see if currently decoding
 var processingInterval        = undefined  // interval to get pending task
-var task_id                   = undefined  // task_id of currently processing task
-var decoderStartInterval      = undefined  // interval to check if decoder starts
+var decoderStartTimeout       = undefined  // timeout to check if decoder starts
 var putFileInCloud            = undefined  // for switching cloud storage
-var retries_count             = 0
 
 // AZURE currently not supported
 if (use_storage === 'aws') {
@@ -224,7 +222,7 @@ function sendFailureStatus(error_message) {
 
   task_id = undefined
   isProcessing = false
-  clearInterval(decoderStartInterval)
+  clearTimeout(decoderStartTimeout)
 }
 ////////////////////////////////////////////////////////////////////////////////
 // end of task controller communication functions declarations
@@ -259,22 +257,14 @@ function handleTask(task) {
   var ext = path.parse(original_filename).ext.replace(".","")
 
   if (supported_extensions.includes(ext)) {
-    // interval is to check if decoding starts and retries
-    decoderStartInterval = setInterval(() => {
-      cleanUpDecoderFiles()
-      if (retries_count < 2) {
-        retries_count += 1
-        getFileFromURL(cloud_url, original_filename).then( val => {
-          storeMetadataFile(meta_info)
-          storeAudioFile(val)
-        })
-      }
-      else {
-        sendFailureStatus("DECODER_DID_NOT_START")
-      }
-    }, 30000)  // 30 seconds to decoder to start
 
     getFileFromURL(cloud_url, original_filename).then( val => {
+
+      decoderStartTimeout = setTimeout(() => {
+        cleanUpDecoderFiles()
+        sendFailureStatus("DECODER_DID_NOT_START")
+      }, 30000)  // 30s wait for decoder to pick up file and start, if not, send failure
+
       storeMetadataFile(meta_info)
       storeAudioFile(val)
     })
@@ -490,7 +480,7 @@ app.post('/status', (req, res) => {
     })
   }
   else if (status === "STARTING") {
-    clearInterval(decoderStartInterval)
+    clearTimeout(decoderStartTimeout)
   }
 })
 
