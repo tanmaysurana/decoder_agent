@@ -111,7 +111,7 @@ async function putFileIntoAzure(key, data) {
 
     const blockBlobClient = containerClient.getBlockBlobClient(key)
 
-    var objectURL = path.join(containerClient.url, encodeURIComponent(key))
+    var objectURL = containerClient.url.concat('/', encodeURIComponent(key))
 
     const uploadBlobResponse = blockBlobClient.upload(data, Buffer.byteLength(data))
     uploadBlobResponse.then(val => {
