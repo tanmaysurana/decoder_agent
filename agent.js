@@ -32,9 +32,10 @@ const intervalPeriod          = process.env.POLLING_PERIOD || 10000 // milliseco
 const port                    = process.env.PORT
 const root = os.platform()  === 'win32' ? 'c:' : '/'
 const num_bytes_for_buffer    = 100000  // 100kb, buffer space for transcription
-const worker_queue            = process.env.WORKER_QUEUE      // default value is 'normal'
 var worker_name               = `ipv4address-${os.hostname}`  // ipv4address will be assigned below
+const worker_queue            = process.env.WORKER_QUEUE      // default value is 'normal'
 const worker_language         = process.env.WORKER_LANGUAGE   // english | mandarin | malay
+const worker_sampling_rate    = process.env.WORKER_SAMPLING_RATE ? process.env.WORKER_SAMPLING_RATE.toLowerCase() : '16khz'  // audio sampling rate
 
 const supported_extensions    = ["wav","mp3","mp4","aac","ac3","aiff","amr","flac","m4a","ogg","opus","wma","ts"]
 var original_filename         = undefined  // filename received from taskcontroller
@@ -44,7 +45,6 @@ var processingInterval        = undefined  // interval to get pending task
 var decoderStartTimeout       = undefined  // timeout to check if decoder starts
 var putFileInCloud            = undefined  // for switching cloud storage
 
-// AZURE currently not supported
 if (use_storage === 'aws') {
   putFileInCloud = putFileIntoS3
 }
@@ -140,6 +140,7 @@ function getPendingTask(options) {
     worker: worker_name,
     lang: worker_language,
     queue: worker_queue,
+    sampling: worker_sampling_rate,
   }
 
   axios.post(`${taskControllerEndpoint}/tasks/actions`, params)
@@ -223,6 +224,24 @@ function sendFailureStatus(error_message) {
   task_id = undefined
   isProcessing = false
   clearTimeout(decoderStartTimeout)
+}
+
+function sendRetryRequest() {
+
+  var params = {
+    type: "retry",
+  }
+
+  axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
+  .then(response => {
+    console.log('Retry request sent to TaskController')
+  })
+  .catch(error => {
+    console.log(`Error sending retry request to TaskController: ${error}`)
+  })
+
+  task_id = undefined
+  isProcessing = false
 }
 ////////////////////////////////////////////////////////////////////////////////
 // end of task controller communication functions declarations
@@ -318,6 +337,13 @@ async function storeAudioFile(val) {
     data.pipe(file)
     console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
 
+    file.on('finish', () => {
+      getAudioDurationInSeconds(`input/${filename}`)
+      .then(duration => {
+        console.log(`Audio file duration: ${Math.floor(duration/60)} minutes ${duration%60} seconds`)
+      })
+    })
+
     // file.on('finish', () => {
     //   getAudioDurationInSeconds(`input/${filename}`)
     //   .then(duration => {
@@ -379,6 +405,11 @@ function sendTranscriptionFiles(callback) {
     var name = path.parse(converted_filename).name
     var original_name = path.parse(original_filename).name
     fs.readdir(`./output/${name}`, (err, files) => {
+
+      if (files === undefined) {
+        sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND")
+        reject()
+      }
 
       var zip = new AdmZip()
       files.forEach((itemname) => {
@@ -508,6 +539,15 @@ app.get('/stop', (req, res) => {
     }
   }
   checkProcessing()
+})
+
+app.get('/retry', (req, res) => {
+  clearInterval(processingInterval)
+  processingInterval = undefined
+
+  if (isProcessing) {
+    sendRetryRequest()
+  }
 })
 
 app.listen(port, () => {
