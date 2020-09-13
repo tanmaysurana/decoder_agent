@@ -18,29 +18,29 @@ dotenv.config()
 ////////////////////////////////////////////////////////////////////////////////
 const aws_access_key_id       = process.env.AWS_ACCESS_KEY_ID
 const aws_secret_access_key   = process.env.AWS_SECRET_ACCESS_KEY
-const aws_bucket              = process.env.AWS_BUCKET  // transcription files get uploaded to this bucket
+const aws_bucket              = process.env.AWS_BUCKET
 
 const azure_account           = process.env.AZURE_ACCOUNT
 const azure_account_key       = process.env.AZURE_ACCOUNT_KEY
 const azure_container         = process.env.AZURE_CONTAINER
 
-const use_storage             = process.env.USE_STORAGE  // aws | azure (azure currently not supported)
+const use_storage             = process.env.USE_STORAGE  // aws | azure
 
 const remoteIPv4Url           = 'http://ipv4bot.whatismyipaddress.com/'  // to get external ip
 const taskControllerEndpoint  = process.env.TASKCONTROLLER_URL
-const intervalPeriod          = process.env.POLLING_PERIOD || 10000 // milliseconds
+const intervalPeriod          = process.env.POLLING_PERIOD || 15000 // milliseconds
 const port                    = process.env.PORT
 const root = os.platform()  === 'win32' ? 'c:' : '/'
 const num_bytes_for_buffer    = 100000  // 100kb, buffer space for transcription
 var worker_name               = `ipv4address-${os.hostname}`  // ipv4address will be assigned below
 const worker_queue            = process.env.WORKER_QUEUE      // default value is 'normal'
-const worker_language         = process.env.WORKER_LANGUAGE   // english | mandarin | malay
+const worker_language         = process.env.WORKER_LANGUAGE
 const worker_sampling_rate    = process.env.WORKER_SAMPLING_RATE ? process.env.WORKER_SAMPLING_RATE.toLowerCase() : '16khz'  // audio sampling rate
 
 const supported_extensions    = ["wav","mp3","mp4","aac","ac3","aiff","amr","flac","m4a","ogg","opus","wma","ts"]
 var original_filename         = undefined  // filename received from taskcontroller
 var converted_filename        = undefined  // filename after decoder renames (if renaming is enabled)
-var isProcessing              = false      // flag to see if currently decoding
+var isProcessing              = true      // flag to see if currently decoding
 var processingInterval        = undefined  // interval to get pending task
 var decoderStartTimeout       = undefined  // timeout to check if decoder starts
 var putFileInCloud            = undefined  // for switching cloud storage
@@ -118,7 +118,7 @@ async function putFileIntoAzure(key, data) {
       console.log(`TRANSCRIPT: ${key} uploaded to Azure storage container ${containerClient.containerName}`)
       resolve(objectURL)
     }).catch(error => {
-      console.log(`Error during uploading to Azure: ${error}`)
+      console.log(`TRANSCRIPT: Error during uploading to Azure: ${error}`)
     })
   })
 }
@@ -134,7 +134,6 @@ function getPendingTask(options) {
 
   console.log(`${new Date()} Checking for pending task...`)
   // make connection to TaskController and check for pending task
-  // if pending task available, proceed to download from S3
   var params = {
     type: "reserve",
     worker: worker_name,
@@ -145,8 +144,6 @@ function getPendingTask(options) {
 
   axios.post(`${taskControllerEndpoint}/tasks/actions`, params)
   .then(response => {
-    // response should be a json object according to the specified format
-    // get file from S3 based on response
 
     // if response === null, no pending task
     if (response.data.task) {
@@ -154,14 +151,15 @@ function getPendingTask(options) {
       if (task.queue === worker_queue) {
         console.log("Task received.")
         console.log(response.data)
+        isProcessing = true
         retries_count = 0
         handleTask(task)
       }
     }
   })
   .catch(error => {
-    console.log(`POLLING_TASK_ERROR: ${error}`)
-    sendFailureStatus("POLLING_TASK_ERROR")
+    console.log(`TASK_OBJECT_ERROR: ${error}`)
+    sendFailureStatus("TASK_OBJECT_ERROR")
   })
 }
 
@@ -175,10 +173,10 @@ function sendStatus(status) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    console.log(`Status ${status} sent to TaskController.`)
+    console.log(`TASKCONTROLLER: Status ${status} sent to TaskController.`)
   })
   .catch(error => {
-    console.log(`Error sending ${status} status to TaskController: ${error}`)
+    console.log(`TASKCONTROLLER: Error sending ${status} status to TaskController: ${error}`)
     console.log(error.response.data)
   })
 }
@@ -195,10 +193,10 @@ function sendSuccessStatus(cloud_link) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    console.log(`Success status sent to TaskController.`)
+    console.log(`TASKCONTROLLER: Success status sent to TaskController.`)
   })
   .catch(error => {
-    console.log(`Error sending success status to TaskController: ${error}`)
+    console.log(`TASKCONTROLLER: Error sending success status to TaskController: ${error}`)
   })
 
   task_id = undefined
@@ -215,10 +213,10 @@ function sendFailureStatus(error_message) {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    console.log(`Failure status sent to TaskController.`)
+    console.log(`TASKCONTROLLER: Failure status ${error_message} sent to TaskController.`)
   })
   .catch(error => {
-    console.log(`Error sending failure status ${error_message} to TaskController: ${error}`)
+    console.log(`TASKCONTROLLER: Error sending failure status ${error_message} to TaskController: ${error}`)
   })
 
   task_id = undefined
@@ -234,10 +232,10 @@ function sendRetryRequest() {
 
   axios.post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
   .then(response => {
-    console.log('Retry request sent to TaskController')
+    console.log('TASKCONTROLLER: Retry request sent to TaskController')
   })
   .catch(error => {
-    console.log(`Error sending retry request to TaskController: ${error}`)
+    console.log(`TASKCONTROLLER: Error sending retry request to TaskController: ${error}`)
   })
 
   task_id = undefined
@@ -252,6 +250,8 @@ function sendRetryRequest() {
 // internal function declarations
 ////////////////////////////////////////////////////////////////////////////////
 function initialize() {
+  // empty input folder
+  emptyInputFolder()
   // check for pending task
   processingInterval = setInterval(()=>{
     if (!isProcessing) getPendingTask()
@@ -264,8 +264,6 @@ function handleTask(task) {
   converted_filename = original_filename
   task_id = task.task_id
   var cloud_url = task.data["cloud-link"]
-
-  isProcessing = true
 
   var meta_info = {
     filename: original_filename,
@@ -340,29 +338,10 @@ async function storeAudioFile(val) {
     file.on('finish', () => {
       getAudioDurationInSeconds(`input/${filename}`)
       .then(duration => {
-        console.log(`Audio file duration: ${Math.floor(duration/60)} minutes ${duration%60} seconds`)
+        console.log(`FILE: Audio file duration: ${Math.floor(duration/60)} minutes ${duration%60} seconds`)
       })
     })
 
-    // file.on('finish', () => {
-    //   getAudioDurationInSeconds(`input/${filename}`)
-    //   .then(duration => {
-    //     console.log(`Audio file duration: ${duration} seconds`)
-    //
-    //     var timeout_duration = (duration < 90) ? 180 : duration*2
-    //     console.log(`Timeout set to ${timeout_duration} seconds`)
-    //     decoderStartInterval = setInterval(() => {
-    //       cleanUpDecoderFiles()
-    //       if (retries_count < 2){
-    //         retries_count += 1
-    //
-    //       }
-    //       else {
-    //         sendFailureStatus("DECODING_TIMEOUT")
-    //       }
-    //     }, timeout_duration*1000)  // seconds to milliseconds
-    //   })
-    // })
   }
 }
 
@@ -389,7 +368,7 @@ function storeMetadataFile(val) {
 
     fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
       if (error) {
-        console.log(`Error creating metadata file. ${error}`)
+        console.log(`FILE: Error creating metadata file. ${error}`)
       }
       console.log(`FILE: Metadata file for ${name} saved.`)
     })
@@ -427,28 +406,45 @@ function sendTranscriptionFiles(callback) {
 function cleanUpDecoderFiles() {
   // remove audio file
   fs.unlink(`./input/${converted_filename}`, (error) => {
-    if (error) console.log(`Error during removal of input file: ${error}`)
-    else console.log(`FILE: Input file ${converted_filename} removed.`)
+    if (error) console.log(`CLEANUP: Error during removal of input file: ${error}`)
+    else console.log(`CLEANUP: Input file ${converted_filename} removed.`)
   })
 
   var name = path.parse(converted_filename).name
 
   // remove metadata file
   fs.unlink(`./input/${name}.txt`, (error) => {
-    if (error) console.log(`Error during removal of metadata file: ${error}`)
-    else console.log(`FILE: Metadata file ${name} removed.`)
+    if (error) console.log(`CLEANUP: Error during removal of metadata file: ${error}`)
+    else console.log(`CLEANUP: Metadata file ${name} removed.`)
   })
 
   // remove details files
   fs.rmdir(`./details/${name}`, {recursive: true}, (error) => {
-    if (error) console.log(`Error during removal of details files: ${error}`)
-    else console.log(`FILE: Details files for ${name} removed.`)
+    if (error) console.log(`CLEANUP: Error during removal of details files: ${error}`)
+    else console.log(`CLEANUP: Details files for ${name} removed.`)
   })
 
   // remove transcription files
   fs.rmdir(`./output/${name}`, {recursive: true}, (error) => {
-    if (error) console.log(`Error during removal of output files: ${error}`)
-    else console.log(`FILE: Output files for ${name} removed.`)
+    if (error) console.log(`CLEANUP: Error during removal of output files: ${error}`)
+    else console.log(`CLEANUP: Output files for ${name} removed.`)
+  })
+}
+
+function emptyInputFolder() {
+  // clean input folder, to be called once upon initialize
+  console.log("Attempting to empty input folder of contents...")
+  fs.readdir(`./input`, (err, files) => {
+    if (files === undefined) {
+      console.log("Input folder already empty. Doing nothing...")
+    }
+    else {
+      files.forEach((itemname) => {
+        fs.unlinkSync(`./input/${itemname}`)
+        console.log(`Input folder item ${itemname} removed.`)
+      })
+    }
+    isProcessing = false
   })
 }
 
@@ -469,6 +465,7 @@ async function getExternalIPv4(debug = false) {
     }
   } catch (error) {
     if (debug) {
+      console.log("Error getting external ipv4 address.")
       console.log(error);
     }
   }
