@@ -132,7 +132,6 @@ async function putFileIntoAzure(key, data) {
 ////////////////////////////////////////////////////////////////////////////////
 function getPendingTask(options) {
 
-  console.log(`${new Date()} Checking for pending task...`)
   // make connection to TaskController and check for pending task
   var params = {
     type: "reserve",
@@ -147,9 +146,10 @@ function getPendingTask(options) {
 
     // if response === null, no pending task
     if (response.data.task) {
+      console.log(`${new Date()}`)
       var task = response.data.task
       if (task.queue === worker_queue) {
-        console.log("Task received.")
+        console.log('Task received.')
         console.log(response.data)
         isProcessing = true
         retries_count = 0
@@ -484,7 +484,12 @@ const app = express()
 app.use(express.json())
 
 app.get('/', (req, res) => {
-  res.send("Hello I am alive")
+  if (isProcessing){
+    res.send("Hello I am alive and currently processing a file.")
+  }
+  else {
+    res.send("Hello I am alive and currently NOT processing a file.")
+  }
 })
 
 app.post('/status', (req, res) => {
