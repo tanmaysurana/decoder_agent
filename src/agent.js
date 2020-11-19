@@ -331,12 +331,12 @@ async function storeAudioFile(val) {
     cleanUpDecoderFiles()
   }
   else {
-    var file = fs.createWriteStream(`input/${filename}`)
+    var file = fs.createWriteStream(`./input/${filename}`)
     data.pipe(file)
     console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
 
     file.on('finish', () => {
-      getAudioDurationInSeconds(`input/${filename}`)
+      getAudioDurationInSeconds(`./input/${filename}`)
       .then(duration => {
         console.log(`FILE: Audio file duration: ${Math.floor(duration/60)} minutes ${duration%60} seconds`)
       })
@@ -497,7 +497,7 @@ app.post('/status', (req, res) => {
 
   converted_filename = body.filename
   var status = body.status
-  var channel = body.channel
+  // var channel = body.channel
 
   res.send("Status received")
 

@@ -1,11 +1,16 @@
-FROM node:12
+FROM node:12-alpine
 
 WORKDIR /usr/src/app
 
-COPY package*.json ./
+COPY package.json package-lock.json ./
 
-RUN npm install
+RUN apk add --no-cache make gcc g++ python && \
+    npm install --production --silent && \
+    npm cache clean --force && \
+    apk del make gcc g++ python
 
-COPY agent.js .
+RUN mkdir input output
 
-CMD ["node", "agent.js"]
+COPY src/ ./src/
+
+CMD ["node", "src/agent.js"]
