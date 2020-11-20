@@ -5,7 +5,6 @@ const os = require('os')
 const fs = require('fs')
 const path = require('path')
 const AdmZip = require('adm-zip')
-const { getAudioDurationInSeconds } = require('get-audio-duration')
 
 const AWS = require("aws-sdk")
 const {BlobServiceClient, StorageSharedKeyCredential} = require("@azure/storage-blob")
@@ -333,15 +332,10 @@ async function storeAudioFile(val) {
   else {
     var file = fs.createWriteStream(`./input/${filename}`)
     data.pipe(file)
-    console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
 
     file.on('finish', () => {
-      getAudioDurationInSeconds(`./input/${filename}`)
-      .then(duration => {
-        console.log(`FILE: Audio file duration: ${Math.floor(duration/60)} minutes ${duration%60} seconds`)
-      })
+      console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
     })
-
   }
 }
 
