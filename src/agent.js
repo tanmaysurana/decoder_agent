@@ -316,7 +316,8 @@ function saveFileFromURL(url, dest) {
 
           file.on('error', err => {
             error = err
-            sendFailureStatus(`DOWNLOAD_ERROR: ${error}`)
+            console.log(`SAVING_AUDIOFILE_ERROR: ${error}`)
+            sendFailureStatus(`SAVING_AUDIOFILE_ERROR`)
             writer.close()
             reject()
           })
