@@ -10,6 +10,7 @@ const AWS = require("aws-sdk")
 const {BlobServiceClient, StorageSharedKeyCredential} = require("@azure/storage-blob")
 
 const dotenv = require('dotenv')
+const { writer } = require('repl')
 dotenv.config()
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -270,76 +271,72 @@ function handleTask(task) {
     numChn: task.data.numChn,
     type: task.data.type
   }
-  var ext = path.parse(original_filename).ext.replace(".","")
+  var ext = path.parse(original_filename).ext.replace(".", "")
 
   if (supported_extensions.includes(ext)) {
 
-    getFileFromURL(cloud_url, original_filename).then( val => {
+    saveMetadataFile(meta_info)
+    saveFileFromURL(cloud_url, original_filename).then( () => {
 
       decoderStartTimeout = setTimeout(() => {
         cleanUpDecoderFiles()
         sendFailureStatus("DECODER_DID_NOT_START")
       }, 30000)  // 30s wait for decoder to pick up file and start, if not, send failure
 
-      storeMetadataFile(meta_info)
-      storeAudioFile(val)
     })
   }
   else {
     sendFailureStatus("FILE_EXTENSION_NOT_SUPPORTED")
   }
-
 }
 
-function getFileFromURL(url, dest) {
-  return new Promise((resolve, reject) => {
-    axios({
-      method: 'get',
-      url: url,
-      responseType: 'stream'
-    })
+function saveFileFromURL(url, dest) {
+  return axios({
+    method: 'get',
+    url: url,
+    responseType: 'stream'
+  })
     .then(response => {
+      return new Promise(async (resolve, reject) => {
+        var content_length = Number(response.headers["content-length"])
 
-      var content_length = Number(response.headers["content-length"])
-      var data = response.data
-      var val = {
-        filename: dest,
-        contentLength: content_length,
-        data: data,
-      }
-      resolve(val)
+        let avail = await getAvailableSpace()
+
+        if (content_length + num_bytes_for_buffer > avail) {
+          // inform about failed decoding
+          sendFailureStatus("LOCALDISK_FULL")
+          cleanUpDecoderFiles()
+          reject()
+        }
+        else {
+          var file = fs.createWriteStream(`./input/${dest}`)
+          response.data.pipe(file)
+
+          let error = null
+
+          file.on('error', err => {
+            error = err
+            sendFailureStatus(`DOWNLOAD_ERROR: ${error}`)
+            writer.close()
+            reject()
+          })
+
+          file.on('close', () => {
+            if (!error) {
+              console.log(`FILE: Audio file of ${content_length} bytes saved.`)
+              resolve()
+            }
+          })
+        }
+      })
     })
-    .catch(error => {
-      console.log(`DOWNLOAD_ERROR: ${error}`)
+    .catch(err => {
+      console.log(`DOWNLOAD_ERROR: ${err}`)
       sendFailureStatus("DOWNLOAD_ERROR")
     })
-  })
 }
 
-async function storeAudioFile(val) {
-  // need to check if enough storage space before writing to disk
-  let avail = await getAvailableSpace()
-
-  var data = val.data
-  var contentLength = val.contentLength
-  var filename = val.filename
-
-  if (contentLength + num_bytes_for_buffer > avail) {
-    // inform about failed decoding
-    sendFailureStatus("LOCALDISK_FULL")
-    cleanUpDecoderFiles()
-  }
-  else {
-    var file = fs.createWriteStream(`./input/${filename}`)
-    data.pipe(file)
-
-    file.on('finish', () => {
-      console.log(`FILE: Audio file of ${contentLength} bytes saved.`)
-    })
-  }
-}
-
-function storeMetadataFile(val) {
+function saveMetadataFile(val) {
 
   var name = path.parse(val.filename).name
 
@@ -507,7 +504,14 @@ app.post('/status', (req, res) => {
     })
   }
   else if (status === "STARTING") {
-    clearTimeout(decoderStartTimeout)
+    if (decoderStartTimeout._destroyed) {
+      setTimeout(() => {
+        clearTimeout(decoderStartTimeout)
+      }, 5000)  // wait 5s in case decoderStartTimeout is set after receiving signal 
+    }
+    else {
+      clearTimeout(decoderStartTimeout)
+    }
   }
 })
 

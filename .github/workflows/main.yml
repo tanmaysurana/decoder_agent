@@ -8,7 +8,7 @@ on:
   push:
     branches: [ master ]
     paths:
-    - 'src/'
+    - 'src/**'
     - 'Dockerfile'
     - 'package**.json'
 
