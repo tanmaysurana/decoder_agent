@@ -5,12 +5,12 @@ const os = require('os')
 const fs = require('fs')
 const path = require('path')
 const AdmZip = require('adm-zip')
+const queue = require('queue')
 
 const AWS = require("aws-sdk")
 const {BlobServiceClient, StorageSharedKeyCredential} = require("@azure/storage-blob")
 
 const dotenv = require('dotenv')
-const { writer } = require('repl')
 dotenv.config()
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -40,6 +40,7 @@ const worker_sampling_rate    = process.env.WORKER_SAMPLING_RATE ? process.env.W
 const supported_extensions    = ["wav","mp3","mp4","aac","ac3","aiff","amr","flac","m4a","ogg","opus","wma","ts"]
 var original_filename         = undefined  // filename received from taskcontroller
 var converted_filename        = undefined  // filename after decoder renames (if renaming is enabled)
+var outgoingRequestsQueue     = queue({ concurrency: 1, autostart: true })  // queue for outgoing requests to TaskController, to prevent race conditions
 var isProcessing              = true      // flag to see if currently decoding
 var processingInterval        = undefined  // interval to get pending task
 var decoderStartTimeout       = undefined  // timeout to check if decoder starts
@@ -159,12 +160,12 @@ function getPendingTask(options) {
   })
   .catch(error => {
     console.log(`TASK_OBJECT_ERROR: ${error}`)
-    sendFailureStatus("TASK_OBJECT_ERROR")
+    outgoingRequestsQueue.push( cb => sendFailureStatus("TASK_OBJECT_ERROR", cb) )
   })
 }
 
-function sendStatus(status) {
-
+function sendStatus(status, callback) {
+  // queue requires a callback
   var params = {
     type: "progress",
     worker: worker_name,
@@ -179,10 +180,11 @@ function sendStatus(status) {
     console.log(`TASKCONTROLLER: Error sending ${status} status to TaskController: ${error}`)
     console.log(error.response.data)
   })
+  .finally(callback)
 }
 
-function sendSuccessStatus(cloud_link) {
-
+function sendSuccessStatus(cloud_link, callback) {
+  // queue requires a callback
   var params = {
     type: "success",
     worker: worker_name,
@@ -198,13 +200,14 @@ function sendSuccessStatus(cloud_link) {
   .catch(error => {
     console.log(`TASKCONTROLLER: Error sending success status to TaskController: ${error}`)
   })
+  .finally(callback)
 
   task_id = undefined
   isProcessing = false
 }
 
-function sendFailureStatus(error_message) {
-
+function sendFailureStatus(error_message, callback) {
+  // queue requires a callback
   var params = {
     type: "error",
     worker: worker_name,
@@ -218,14 +221,15 @@ function sendFailureStatus(error_message) {
   .catch(error => {
     console.log(`TASKCONTROLLER: Error sending failure status ${error_message} to TaskController: ${error}`)
   })
+  .finally(callback)
 
   task_id = undefined
   isProcessing = false
   clearTimeout(decoderStartTimeout)
 }
 
-function sendRetryRequest() {
-
+function sendRetryRequest(callback) {
+  // queue requires a callback
   var params = {
     type: "retry",
   }
@@ -237,6 +241,7 @@ function sendRetryRequest() {
   .catch(error => {
     console.log(`TASKCONTROLLER: Error sending retry request to TaskController: ${error}`)
   })
+  .finally(callback)
 
   task_id = undefined
   isProcessing = false
@@ -280,13 +285,13 @@ function handleTask(task) {
 
       decoderStartTimeout = setTimeout(() => {
         cleanUpDecoderFiles()
-        sendFailureStatus("DECODER_DID_NOT_START")
+        outgoingRequestsQueue.push( cb => sendFailureStatus("DECODER_DID_NOT_START", cb) )
       }, 30000)  // 30s wait for decoder to pick up file and start, if not, send failure
 
     })
   }
   else {
-    sendFailureStatus("FILE_EXTENSION_NOT_SUPPORTED")
+    outgoingRequestsQueue.push( cb => sendFailureStatus("FILE_EXTENSION_NOT_SUPPORTED", cb) )
   }
 }
 
@@ -304,7 +309,7 @@ function saveFileFromURL(url, dest) {
 
         if (content_length + num_bytes_for_buffer > avail) {
           // inform about failed decoding
-          sendFailureStatus("LOCALDISK_FULL")
+          outgoingRequestsQueue.push( cb => sendFailureStatus("LOCALDISK_FULL", cb) )
           cleanUpDecoderFiles()
           reject()
         }
@@ -317,8 +322,8 @@ function saveFileFromURL(url, dest) {
           file.on('error', err => {
             error = err
             console.log(`SAVING_AUDIOFILE_ERROR: ${error}`)
-            sendFailureStatus(`SAVING_AUDIOFILE_ERROR`)
-            writer.close()
+            outgoingRequestsQueue.push( cb => sendFailureStatus("SAVING_AUDIOFILE_ERROR", cb) )
+            file.close()
             reject()
           })
 
@@ -333,7 +338,7 @@ function saveFileFromURL(url, dest) {
     })
     .catch(err => {
       console.log(`DOWNLOAD_ERROR: ${err}`)
-      sendFailureStatus("DOWNLOAD_ERROR")
+      outgoingRequestsQueue.push( cb => sendFailureStatus("DOWNLOAD_ERROR", cb) )
     })
 }
 
@@ -378,7 +383,7 @@ function sendTranscriptionFiles(callback) {
     fs.readdir(`./output/${name}`, (err, files) => {
 
       if (files === undefined) {
-        sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND")
+        outgoingRequestsQueue.push( cb => sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND", cb) )
         reject()
       }
 
@@ -494,13 +499,13 @@ app.post('/status', (req, res) => {
   res.send("Status received")
 
   console.log(`DECODER: ${converted_filename} is ${status}.`)
-  sendStatus(status)
+  outgoingRequestsQueue.push( cb => sendStatus(status, cb) )
 
   status = status.split(" ")[0]
   // upload transcription to AWS S3
   if (status === "DONE") {
     sendTranscriptionFiles(putFileInCloud).then( val => {
-      sendSuccessStatus(val)
+      outgoingRequestsQueue.push( cb => sendSuccessStatus(val, cb) )
       cleanUpDecoderFiles()
     })
   }
@@ -523,7 +528,7 @@ app.post('/error', (req, res) => {
 
   var error = body.status
 
-  sendFailureStatus(error)
+  outgoingRequestsQueue.push( cb => sendFailureStatus(error, cb) );
   cleanUpDecoderFiles()
 })
 
@@ -547,7 +552,7 @@ app.get('/retry', (req, res) => {
   processingInterval = undefined
 
   if (isProcessing) {
-    sendRetryRequest()
+    outgoingRequestsQueue.push( cb => sendRetryRequest(cb) )
   }
 })
 
@@ -565,7 +570,7 @@ app.listen(port, () => {
 process.on("SIGINT", () => {
   console.log("Stopping...")
   if (isProcessing) {
-    sendFailureStatus("CONTAINER_SHUT_DOWN")
+    outgoingRequestsQueue.push( cb => sendFailureStatus("CONTAINER_SHUTDOWN", cb) )
   }
   process.exit(0)
 })
