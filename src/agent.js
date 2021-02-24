@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const AdmZip = require("adm-zip");
 const queue = require("queue");
+const jwt = require("jsonwebtoken");
 
 const AWS = require("aws-sdk");
 const {
@@ -308,6 +309,16 @@ function handleTask(task) {
   task_id = task.task_id;
   var cloud_url = task.data["cloud-link"];
 
+  // jwt
+  try {
+    cloud_url = jwt.verify(cloud_url, "deploy21s$cret", {
+      algorithms: ["HS256"],
+    });
+  } catch (err) {
+    outgoingRequestsQueue.push((cb) => sendFailureStatus(err, cb));
+    return;
+  }
+
   var meta_info = {
     filename: original_filename,
     formats: task.data.formats,
@@ -387,6 +398,14 @@ function saveFileFromURL(url, dest) {
 
 function saveMetadataFile(val) {
   var name = path.parse(val.filename).name;
+  var data = {};
+
+  // jwt
+  var signed = jwt.sign({ filename: name }, "deploy21s$", {
+    algorithm: "HS256",
+  });
+
+  data["filename"] = signed;
 
   var participants = [];
 
@@ -399,24 +418,21 @@ function saveMetadataFile(val) {
       Transcribe: true,
     });
   }
-  if (val.numChn || val.formats) {
-    var data = {
-      Participants: participants,
-      output: val.formats
-        ? val.formats.map((val) => val.replace(".", ""))
-        : undefined,
-    };
 
-    fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
-      if (error) {
-        console.log(`FILE: Error creating metadata file. ${error}`);
-      } else {
-        console.log(`FILE: Metadata file for ${name} saved.`);
-      }
-    });
-  } else {
-    console.log(`FILE: Metadata file for ${name} was not created.`);
+  if (val.numChn || val.formats) {
+    data["Participants"] = participants;
+    data["output"] = val.formats
+      ? val.formats.map((val) => val.replace(".", ""))
+      : undefined;
   }
+
+  fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
+    if (error) {
+      console.log(`FILE: Error creating metadata file. ${error}`);
+    } else {
+      console.log(`FILE: Metadata file for ${name} saved.`);
+    }
+  });
 }
 
 function sendTranscriptionFiles(callback) {
