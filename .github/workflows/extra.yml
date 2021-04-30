@@ -1,12 +1,12 @@
 # This is a basic workflow to help you get started with Actions
 
-name: Docker build & push for master branch
+name: Docker build & push for extra branch
 
 # Controls when the action will run. Triggers the workflow on push or pull request
 # events but only for the master branch
 on:
   push:
-    branches: [ master ]
+    branches: [ extra ]
     paths:
     - 'src/**'
     - 'Dockerfile'
@@ -42,7 +42,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
           registry: # optional
           repository: demonicmushy/decoder_agent
-          tags: latest
+          tags: extra
           # Automatically tags the built image with the git reference as per the readme
           tag_with_ref: # optional
           # Automatically tags the built image with the git short SHA as per the readme
