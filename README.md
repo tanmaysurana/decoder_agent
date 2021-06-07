@@ -50,6 +50,7 @@ WORKER_QUEUE=                   # task's queue to filter for
 WORKER_LANGUAGE=                # task's language to filter for
 
 # OPTIONAL
+DECODER_START_WAIT_TIME=        # time to wait for decoder to send "STARTING" status update, in milliseconds, defaults to '30000'
 WORKER_SAMPLING_RATE=           # task's sampling rate to filter for, defaults to '16khz'
 POLLING_PERIOD=                 # how often it polls TaskController for new tasks in milliseconds, defaults to '15000'
 ```
