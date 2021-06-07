@@ -31,10 +31,12 @@ const use_storage = process.env.USE_STORAGE; // aws | azure
 
 const remoteIPv4Url = "http://ipv4bot.whatismyipaddress.com/"; // to get external ip
 const taskControllerEndpoint = process.env.TASKCONTROLLER_URL;
+const decoderStartWaitTime = process.env.DECODER_START_WAIT_TIME || 30000;  // milliseconds
 const intervalPeriod = process.env.POLLING_PERIOD || 15000; // milliseconds
 const port = process.env.PORT;
 const root = os.platform() === "win32" ? "c:" : "/";
 const num_bytes_for_buffer = 100000; // 100kb, buffer space for transcription
+
 var worker_name = `ipv4address-${os.hostname}`; // ipv4address will be assigned below
 const worker_queue = process.env.WORKER_QUEUE; // default value is 'normal'
 const worker_language = process.env.WORKER_LANGUAGE;
@@ -324,7 +326,7 @@ function handleTask(task) {
         outgoingRequestsQueue.push((cb) =>
           sendFailureStatus("DECODER_DID_NOT_START", cb)
         );
-      }, 30000); // 30s wait for decoder to pick up file and start, if not, send failure
+      }, decoderStartWaitTime); // 30s wait for decoder to pick up file and start, if not, send failure
     });
   } else {
     outgoingRequestsQueue.push((cb) =>
