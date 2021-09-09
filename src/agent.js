@@ -7,28 +7,12 @@ const path = require("path");
 const AdmZip = require("adm-zip");
 const queue = require("queue");
 
-const AWS = require("aws-sdk");
-const {
-  BlobServiceClient,
-  StorageSharedKeyCredential,
-} = require("@azure/storage-blob");
-
 const dotenv = require("dotenv");
 dotenv.config();
 
 ////////////////////////////////////////////////////////////////////////////////
 // global variables
 ////////////////////////////////////////////////////////////////////////////////
-const aws_access_key_id = process.env.AWS_ACCESS_KEY_ID;
-const aws_secret_access_key = process.env.AWS_SECRET_ACCESS_KEY;
-const aws_bucket = process.env.AWS_BUCKET;
-
-const azure_account = process.env.AZURE_ACCOUNT;
-const azure_account_key = process.env.AZURE_ACCOUNT_KEY;
-const azure_container = process.env.AZURE_CONTAINER;
-
-const use_storage = process.env.USE_STORAGE; // aws | azure
-
 const remoteIPv4Url = "http://ipv4bot.whatismyipaddress.com/"; // to get external ip
 const taskControllerEndpoint = process.env.TASKCONTROLLER_URL;
 const decoderStartWaitTime = process.env.DECODER_START_WAIT_TIME || 30000;  // milliseconds
@@ -36,6 +20,7 @@ const intervalPeriod = process.env.POLLING_PERIOD || 15000; // milliseconds
 const port = process.env.PORT;
 const root = os.platform() === "win32" ? "c:" : "/";
 const num_bytes_for_buffer = 100000; // 100kb, buffer space for transcription
+const transcriptionDestination = process.env.TRANSCRIPTION_DESTINATION
 
 var worker_name = `ipv4address-${os.hostname}`; // ipv4address will be assigned below
 const worker_queue = process.env.WORKER_QUEUE; // default value is 'normal'
@@ -43,6 +28,7 @@ const worker_language = process.env.WORKER_LANGUAGE;
 const worker_sampling_rate = process.env.WORKER_SAMPLING_RATE
   ? process.env.WORKER_SAMPLING_RATE.toLowerCase()
   : "16khz"; // audio sampling rate
+
 
 const supported_extensions = [
   "wav",
@@ -65,94 +51,10 @@ var outgoingRequestsQueue = queue({ concurrency: 1, autostart: true }); // queue
 var isProcessing = true; // flag to see if currently decoding
 var processingInterval = undefined; // interval to get pending task
 var decoderStartTimeout = undefined; // timeout to check if decoder starts
-var putFileInCloud = undefined; // for switching cloud storage
-
-if (use_storage === "aws") {
-  putFileInCloud = putFileIntoS3;
-} else if (use_storage === "azure") {
-  putFileInCloud = putFileIntoAzure;
-}
 
 getExternalIPv4(); // change worker_name to reflect external ipv4 address
 ////////////////////////////////////////////////////////////////////////////////
 // end of global variables
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// AWS S3 related
-////////////////////////////////////////////////////////////////////////////////
-AWS.config = new AWS.Config({
-  // not needed because it looks at ENV variable already
-  // accessKeyId: aws_access_key_id,
-  // secretAccessKey: aws_secret_access_key
-});
-
-var s3 = use_storage === "aws" ? new AWS.S3() : undefined;
-
-function putFileIntoS3(key, data) {
-  return new Promise((resolve, reject) => {
-    var params = {
-      Bucket: aws_bucket,
-      Key: key,
-      Body: data,
-      ACL: "public-read",
-      // Metadata: ""
-    };
-    s3.upload(params, (err, data) => {
-      // data.Location = URL of uploaded object
-      // data.ETag
-      // data.Bucket
-      // data.Key
-      console.log(`TRANSCRIPT: ${key} uploaded to AWS bucket ${aws_bucket}`);
-      resolve(data.Location);
-    });
-  });
-}
-////////////////////////////////////////////////////////////////////////////////
-// end of AWS S3 related
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// Azure Storage
-////////////////////////////////////////////////////////////////////////////////
-var containerClient = undefined;
-
-if (use_storage === "azure") {
-  const sharedKeyCredential = new StorageSharedKeyCredential(
-    azure_account,
-    azure_account_key
-  );
-  const blobServiceClient = new BlobServiceClient(
-    `https://${azure_account}.blob.core.windows.net`,
-    sharedKeyCredential
-  );
-  containerClient = blobServiceClient.getContainerClient(azure_container);
-}
-
-async function putFileIntoAzure(key, data) {
-  return new Promise((resolve, reject) => {
-    const blockBlobClient = containerClient.getBlockBlobClient(key);
-
-    var objectURL = containerClient.url.concat("/", encodeURIComponent(key));
-
-    const uploadBlobResponse = blockBlobClient.upload(
-      data,
-      Buffer.byteLength(data)
-    );
-    uploadBlobResponse
-      .then((val) => {
-        console.log(
-          `TRANSCRIPT: ${key} uploaded to Azure storage container ${containerClient.containerName}`
-        );
-        resolve(objectURL);
-      })
-      .catch((error) => {
-        console.log(`TRANSCRIPT: Error during uploading to Azure: ${error}`);
-      });
-  });
-}
-////////////////////////////////////////////////////////////////////////////////
-// end of Azure Storage
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -214,13 +116,13 @@ function sendStatus(status, callback) {
     .finally(callback);
 }
 
-function sendSuccessStatus(cloud_link, callback) {
+function sendSuccessStatus(file_path, callback) {
   // queue requires a callback
   var params = {
     type: "success",
     worker: worker_name,
     result: {
-      "cloud-link": cloud_link,
+      "file_path": file_path,
     },
   };
 
@@ -446,6 +348,18 @@ function sendTranscriptionFiles(callback) {
   });
 }
 
+function saveFile(key, data) {
+  return new Promise((resolve, reject)=> {
+    var fullpath = path.join(transcriptionDestination, key)
+    fs.writeFile(fullpath, data, (err) => {
+      if (err) throw err;
+
+      console.log(`TRANSCRIPT: ${key} written to ${fullpath}`)
+      resolve(fullpath)
+    })
+  })
+}
+
 function cleanUpDecoderFiles() {
   // remove audio file
   fs.unlink(`./input/${converted_filename}`, (error) => {
@@ -551,7 +465,7 @@ app.post("/status", (req, res) => {
   status = status.split(" ")[0];
   // upload transcription to AWS S3
   if (status === "DONE") {
-    sendTranscriptionFiles(putFileInCloud).then((val) => {
+    sendTranscriptionFiles(saveFile).then((val) => {
       outgoingRequestsQueue.push((cb) => sendSuccessStatus(val, cb));
       cleanUpDecoderFiles();
     });
