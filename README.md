@@ -1,6 +1,6 @@
 # decoder_agent
 
-This decoder agent is to be used in conjunction with a decoder.
+This decoder agent is to be used in conjunction with a decoder. There is an example of the `docker-compose.yaml` for the agent's component.
 
 The agent's responsibilities are:
 * Retrieving tasks from external Task Controller through http
@@ -11,7 +11,7 @@ The agent's responsibilities are:
 * Uploading of transcriptions files to local storage
     * Transcription files are assumed to be in `output/` directory
     * If audio file has the name `abcdef.wav`, the resulting output files are assumed to be in `output/abcdef/` directory
-    * The entire `output/abcdef/` directory will be written to the destination local path
+    * The entire `output/abcdef/` directory will be written to `transcriptions/`
     * For Docker/Kubernetes Deployments, Agent and Decoder will both need to access this same directory
 * For Docker images built with the Dockerfile, `input/` and `output/` directories' full paths are `/usr/src/app/input/` and `/usr/src/app/output/` respectively
 
@@ -21,7 +21,7 @@ Expected functionality of Decoder:
     * Request body should have these fields
         * `{ "status": string, "filename": string }`
         * If `filename` provided by Decoder is different from the original filename obtained from the TaskController, Agent will take the new `filename` value when searching for the output transcription files
-    * `status: "DONE"` will signal to the Agent that decoding process is complete and will write the transcription files to the local destination path 
+    * `status: "DONE"` will signal to the Agent that decoding process is complete and will write the transcription files to `transcriptions/` 
     * For all other statuses, Agent will simply forward them to TaskController
 * Send error update to agent via POST `/error`
     * Media type `application/json`
@@ -32,8 +32,6 @@ Expected functionality of Decoder:
 
 Environment variables:
 ```
-TRANSCRIPTION_DESTINATION=      # transcription file destination
-
 PORT=                           # port number that the Agent will run HTTP server
 TASKCONTROLLER_URL=             # URL of TaskController to receive tasks from
 WORKER_QUEUE=                   # task's queue to filter for

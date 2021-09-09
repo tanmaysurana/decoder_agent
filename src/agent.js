@@ -20,7 +20,7 @@ const intervalPeriod = process.env.POLLING_PERIOD || 15000; // milliseconds
 const port = process.env.PORT;
 const root = os.platform() === "win32" ? "c:" : "/";
 const num_bytes_for_buffer = 100000; // 100kb, buffer space for transcription
-const transcriptionDestination = process.env.TRANSCRIPTION_DESTINATION
+const transcriptionDestination = "./transcriptions" // output folder for transcriptions, meant to be docker volume mapped to existing location
 
 var worker_name = `ipv4address-${os.hostname}`; // ipv4address will be assigned below
 const worker_queue = process.env.WORKER_QUEUE; // default value is 'normal'
