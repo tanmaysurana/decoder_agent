@@ -382,20 +382,20 @@ function saveFile(key, data) {
 
 function cleanUpDecoderFiles() {
   // remove audio file
-  fs.unlink(`${inputDir}/${converted_filename}`, (error) => {
-    if (error)
-      console.log(`CLEANUP: Error during removal of input file: ${error}`);
-    else console.log(`CLEANUP: Input file ${converted_filename} removed.`);
-  });
+  // fs.unlink(`${inputDir}/${converted_filename}`, (error) => {
+  //   if (error)
+  //     console.log(`CLEANUP: Error during removal of input file: ${error}`);
+  //   else console.log(`CLEANUP: Input file ${converted_filename} removed.`);
+  // });
 
-  var name = path.parse(converted_filename).name;
+  // var name = path.parse(converted_filename).name;
 
-  // remove metadata file
-  fs.unlink(`${inputDir}/${name}.txt`, (error) => {
-    if (error)
-      console.log(`CLEANUP: Error during removal of metadata file: ${error}`);
-    else console.log(`CLEANUP: Metadata file ${name} removed.`);
-  });
+  // // remove metadata file
+  // fs.unlink(`${inputDir}/${name}.txt`, (error) => {
+  //   if (error)
+  //     console.log(`CLEANUP: Error during removal of metadata file: ${error}`);
+  //   else console.log(`CLEANUP: Metadata file ${name} removed.`);
+  // });
 
   // remove details files
   fs.rmdir(`${detailsDir}/${name}`, { recursive: true }, (error) => {
