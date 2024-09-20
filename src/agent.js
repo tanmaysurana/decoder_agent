@@ -3,9 +3,11 @@ const axios = require("axios");
 const disk = require("diskusage");
 const os = require("os");
 const fs = require("fs");
+const fsPromises = require("fs").promises;
 const path = require("path");
 const AdmZip = require("adm-zip");
 const queue = require("queue");
+const glob = require("glob")
 
 const AWS = require("aws-sdk");
 const {
@@ -19,15 +21,19 @@ dotenv.config();
 ////////////////////////////////////////////////////////////////////////////////
 // global variables
 ////////////////////////////////////////////////////////////////////////////////
+
+const use_storage = process.env.USE_STORAGE ? process.env.USE_STORAGE : 'azure'; // aws | azure
+
+const azure_account = process.env.AZURE_ACCOUNT ? process.env.AZURE_ACCOUNT : 'abxdata2024';
+const azure_account_key = process.env.AZURE_ACCOUNT_KEY ? process.env.AZURE_ACCOUNT_KEY : 'RKvSkKNriemVLt+LJuuqyt/HaIUrA2fp3g+8wJpbSB/oTyWMj+/cSgXXK/HD5Q/ZpQu5AdDv2N8J+AStALnC+Q==';
+const azure_container = process.env.AZURE_CONTAINER ? process.env.AZURE_CONTAINER : 'meadow9transcript';
+
 const aws_access_key_id = process.env.AWS_ACCESS_KEY_ID;
 const aws_secret_access_key = process.env.AWS_SECRET_ACCESS_KEY;
 const aws_bucket = process.env.AWS_BUCKET;
 
-const azure_account = process.env.AZURE_ACCOUNT;
-const azure_account_key = process.env.AZURE_ACCOUNT_KEY;
-const azure_container = process.env.AZURE_CONTAINER;
 
-const use_storage = process.env.USE_STORAGE; // aws | azure
+
 
 const remoteIPv4Url = "http://ipv4bot.whatismyipaddress.com/"; // to get external ip
 const taskControllerEndpoint = process.env.TASKCONTROLLER_URL;
@@ -315,6 +321,7 @@ function handleTask(task) {
     formats: task.data.formats,
     numChn: task.data.numChn,
     type: task.data.type,
+    customData: task.data.customData
   };
   var ext = path.parse(original_filename).ext.replace(".", "");
 
@@ -322,7 +329,7 @@ function handleTask(task) {
     saveMetadataFile(meta_info);
     saveFileFromURL(cloud_url, original_filename).then(() => {
       decoderStartTimeout = setTimeout(() => {
-        cleanUpDecoderFiles();
+        cleanUpDecoderFiles(true);
         outgoingRequestsQueue.push((cb) =>
           sendFailureStatus("DECODER_DID_NOT_START", cb)
         );
@@ -338,7 +345,7 @@ function handleTask(task) {
 function saveFileFromURL(url, dest) {
   return axios({
     method: "get",
-    url: url,
+    url: url.split('.wav')[0] + '.wav',
     responseType: "stream",
   })
     .then((response) => {
@@ -352,7 +359,7 @@ function saveFileFromURL(url, dest) {
           outgoingRequestsQueue.push((cb) =>
             sendFailureStatus("LOCALDISK_FULL", cb)
           );
-          cleanUpDecoderFiles();
+          cleanUpDecoderFiles(true);
           reject();
         } else {
           var file = fs.createWriteStream(`./input/${dest}`);
@@ -373,6 +380,11 @@ function saveFileFromURL(url, dest) {
           file.on("close", () => {
             if (!error) {
               console.log(`FILE: Audio file of ${content_length} bytes saved.`);
+              try {
+                fs.copyFileSync(`./input/${dest}`, `./output/${dest}`);
+              } catch (error) {
+                console.log(`FILE: Error copying audio file to output. ${error}`);
+              }
               resolve();
             }
           });
@@ -409,7 +421,19 @@ function saveMetadataFile(val) {
         : undefined,
     };
 
-    fs.writeFile(`./input/${name}.txt`, JSON.stringify(data), (error) => {
+    for(const key of Object.keys(val.customData)) {
+      data[key] = val.customData[key]
+    }
+
+    fs.writeFile(`./input/${name}.json`, JSON.stringify(data), (error) => {
+      if (error) {
+        console.log(`FILE: Error creating metadata file. ${error}`);
+      } else {
+        console.log(`FILE: Metadata file for ${name} saved.`);
+      }
+    });
+
+    fs.writeFile(`./output/${name}.json`, JSON.stringify(data), (error) => {
       if (error) {
         console.log(`FILE: Error creating metadata file. ${error}`);
       } else {
@@ -425,7 +449,7 @@ function sendTranscriptionFiles(callback) {
   return new Promise((resolve, reject) => {
     var name = path.parse(converted_filename).name;
     var original_name = path.parse(original_filename).name;
-    fs.readdir(`./output/${name}`, (err, files) => {
+    glob(`./output/${name}.*`, (err, files) => {
       if (files === undefined) {
         outgoingRequestsQueue.push((cb) =>
           sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND", cb)
@@ -435,7 +459,7 @@ function sendTranscriptionFiles(callback) {
 
       var zip = new AdmZip();
       files.forEach((itemname) => {
-        zip.addLocalFile(`./output/${name}/${itemname}`);
+        zip.addLocalFile(itemname);
       });
 
       var zipBuffer = zip.toBuffer();
@@ -446,7 +470,7 @@ function sendTranscriptionFiles(callback) {
   });
 }
 
-function cleanUpDecoderFiles() {
+function cleanUpDecoderFiles(isError=false) {
   // remove audio file
   fs.unlink(`./input/${converted_filename}`, (error) => {
     if (error)
@@ -457,7 +481,7 @@ function cleanUpDecoderFiles() {
   var name = path.parse(converted_filename).name;
 
   // remove metadata file
-  fs.unlink(`./input/${name}.txt`, (error) => {
+  fs.unlink(`./input/${name}.json`, (error) => {
     if (error)
       console.log(`CLEANUP: Error during removal of metadata file: ${error}`);
     else console.log(`CLEANUP: Metadata file ${name} removed.`);
@@ -471,11 +495,37 @@ function cleanUpDecoderFiles() {
   });
 
   // remove transcription files
-  fs.rmdir(`./output/${name}`, { recursive: true }, (error) => {
-    if (error)
-      console.log(`CLEANUP: Error during removal of output files: ${error}`);
-    else console.log(`CLEANUP: Output files for ${name} removed.`);
-  });
+  // fs.rmdir(`./output/${name}`, { recursive: true }, (error) => {
+  //   if (error)
+  //     console.log(`CLEANUP: Error during removal of output files: ${error}`);
+  //   else console.log(`CLEANUP: Output files for ${name} removed.`);
+  // });
+
+  // remove transcription files, audio file, and metadata file from output if error occurs
+  if(isError) {
+    glob(`./output/${name}.*`, (err, files) => {
+      if(err) {
+        console.log(`CLEANUP: Error during removal of output files: ${err}`);
+      }
+      else if(files == undefined) {
+      }
+      else {
+        unlinkPromises = []
+        for(const unlinkFile of files) {
+          unlinkPromises.push(
+            fsPromises.unlink(unlinkFile)
+          )
+        }
+        Promise.all(unlinkPromises)
+        .then(() => {
+          console.log(`CLEANUP: Output files for ${name} removed.`)
+        })
+        .catch((err) => {
+          console.log(`CLEANUP: Error during removal of output files: ${err}`)
+        })
+      }
+    });
+  }
 }
 
 function emptyInputFolder() {
@@ -574,7 +624,7 @@ app.post("/error", (req, res) => {
   var error = body.status;
 
   outgoingRequestsQueue.push((cb) => sendFailureStatus(error, cb));
-  cleanUpDecoderFiles();
+  cleanUpDecoderFiles(true);
 });
 
 app.get("/stop", (req, res) => {
@@ -626,3 +676,4 @@ process.on("SIGINT", () => {
 // execution starts here
 ////////////////////////////////////////////////////////////////////////////////
 initialize();
+
