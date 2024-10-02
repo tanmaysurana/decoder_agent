@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const AdmZip = require("adm-zip");
 const queue = require("queue");
+const glob = require("glob");
 
 const dotenv = require("dotenv");
 dotenv.config();
@@ -330,7 +331,7 @@ function saveMetadataFile(val) {
         : undefined,
     };
 
-    fs.writeFile(`${inputDir}/${name}.txt`, JSON.stringify(data), (error) => {
+    fs.writeFile(`${inputDir}/${name}.json`, JSON.stringify(data), (error) => {
       if (error) {
         console.log(`FILE: Error creating metadata file. ${error}`);
       } else {
@@ -343,27 +344,24 @@ function saveMetadataFile(val) {
 }
 
 function sendTranscriptionFiles(callback) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     var name = path.parse(converted_filename).name;
     var original_name = path.parse(original_filename).name;
-    fs.readdir(`${outputDir}/${name}`, (err, files) => {
-      if (files === undefined) {
-        outgoingRequestsQueue.push((cb) =>
-          sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND", cb)
-        );
-        reject();
-      }
+    const files = await glob(`${outputDir}/${name}.*`)
+    if (files === undefined) {
+      outgoingRequestsQueue.push((cb) =>
+        sendFailureStatus("TRANSCRIPTIONS_NOT_FOUND", cb)
+      );
+      reject();
+    }
+    var zip = new AdmZip();
+    files.forEach((itemname) => {
+      zip.addLocalFile(itemname);
+    });
 
-      var zip = new AdmZip();
-      files.forEach((itemname) => {
-        zip.addLocalFile(`${outputDir}/${name}/${itemname}`);
-        console.log(`${outputDir}/${name}/${itemname} added`)
-      });
-
-      var zipBuffer = zip.toBuffer();
-      callback(`${original_name}.zip`, zipBuffer).then((val) => {
-        resolve(val);
-      });
+    var zipBuffer = zip.toBuffer();
+    callback(`${original_name}.zip`, zipBuffer).then((val) => {
+      resolve(val);
     });
   });
 }
@@ -371,6 +369,7 @@ function sendTranscriptionFiles(callback) {
 function saveFile(key, data) {
   return new Promise((resolve, reject)=> {
     var fullpath = path.join(transcriptionDestination, key)
+    console.log(fullpath)
     fs.writeFile(fullpath, data, (err) => {
       if (err) throw err;
 
@@ -380,22 +379,22 @@ function saveFile(key, data) {
   })
 }
 
-function cleanUpDecoderFiles() {
-  // remove audio file
-  // fs.unlink(`${inputDir}/${converted_filename}`, (error) => {
-  //   if (error)
-  //     console.log(`CLEANUP: Error during removal of input file: ${error}`);
-  //   else console.log(`CLEANUP: Input file ${converted_filename} removed.`);
-  // });
+async function cleanUpDecoderFiles() {
+  // // remove audio file
+  fs.unlink(`${inputDir}/${converted_filename}`, (error) => {
+    if (error)
+      console.log(`CLEANUP: Error during removal of input file: ${error}`);
+    else console.log(`CLEANUP: Input file ${converted_filename} removed.`);
+  });
 
-  // var name = path.parse(converted_filename).name;
+  var name = path.parse(converted_filename).name;
 
   // // remove metadata file
-  // fs.unlink(`${inputDir}/${name}.txt`, (error) => {
-  //   if (error)
-  //     console.log(`CLEANUP: Error during removal of metadata file: ${error}`);
-  //   else console.log(`CLEANUP: Metadata file ${name} removed.`);
-  // });
+  fs.unlink(`${inputDir}/${name}.json`, (error) => {
+    if (error)
+      console.log(`CLEANUP: Error during removal of metadata file: ${error}`);
+    else console.log(`CLEANUP: Metadata file ${name} removed.`);
+  });
 
   // remove details files
   fs.rmdir(`${detailsDir}/${name}`, { recursive: true }, (error) => {
@@ -405,11 +404,19 @@ function cleanUpDecoderFiles() {
   });
 
   // remove transcription files
-  fs.rmdir(`${outputDir}/${name}`, { recursive: true }, (error) => {
-    if (error)
-      console.log(`CLEANUP: Error during removal of output files: ${error}`);
-    else console.log(`CLEANUP: Output files for ${name} removed.`);
-  });
+  try {
+    const files = await glob(`${outputDir}/${name}.*`)
+    files.forEach((itemname) => {
+      fs.unlink(itemname, (error) => {
+        if (error)
+          console.log(`CLEANUP: Error during removal of output file ${itemname}: ${error}`);
+        else console.log(`CLEANUP: Output file ${itemname} removed.`);
+      });
+    });
+  } catch (error) {
+    console.log(`CLEANUP: Error during removal of output files: ${error}`);
+  }
+  
 }
 
 function emptyInputFolder() {
@@ -490,7 +497,7 @@ app.post("/status", (req, res) => {
       cleanUpDecoderFiles();
     });
   } else if (status === "STARTING") {
-    if (decoderStartTimeout._destroyed) {
+    if (decoderStartTimeout && decoderStartTimeout._destroyed) {
       setTimeout(() => {
         clearTimeout(decoderStartTimeout);
       }, 5000); // wait 5s in case decoderStartTimeout is set after receiving signal
