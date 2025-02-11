@@ -68,10 +68,12 @@ const supported_extensions = [
 var original_filename = undefined; // filename received from taskcontroller
 var converted_filename = undefined; // filename after decoder renames (if renaming is enabled)
 var outgoingRequestsQueue = queue({ concurrency: 1, autostart: true }); // queue for outgoing requests to TaskController, to prevent race conditions
+outgoingRequestsQueue.on("error", (err) => { console.log(`OUTGOINGREQUESTQUEUE: ${err}`) });
 var isProcessing = true; // flag to see if currently decoding
 var processingInterval = undefined; // interval to get pending task
 var decoderStartTimeout = undefined; // timeout to check if decoder starts
 var putFileInCloud = undefined; // for switching cloud storage
+var task_id = undefined; // task_id from TaskController
 
 if (use_storage === "aws") {
   putFileInCloud = putFileIntoS3;
@@ -198,77 +200,89 @@ function getPendingTask(options) {
     });
 }
 
-function sendStatus(status, callback) {
-  // queue requires a callback
-  var params = {
-    type: "progress",
-    worker: worker_name,
-    progress: status,
-  };
+function sendStatus(status, callback) {// queue requires a callback
+  if (task_id === undefined) {
+    console.log(`WARNING_DIRECT_SUBMISSION: No task_id found. Assuming direct submission. Progress Update "${status}" NOT sent to Task Controller.`);
+    callback();
+  } else {
+    var params = {
+      type: "progress",
+      worker: worker_name,
+      progress: status,
+    };
 
-  axios
-    .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
-    .then((response) => {
-      console.log(`TASKCONTROLLER: Status ${status} sent to TaskController.`);
-    })
-    .catch((error) => {
-      console.log(
-        `TASKCONTROLLER: Error sending ${status} status to TaskController: ${error}`
-      );
-      console.log(error.response.data);
-    })
-    .finally(callback);
+    axios
+      .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
+      .then((response) => {
+        console.log(`TASKCONTROLLER: Status ${status} sent to TaskController.`);
+      })
+      .catch((error) => {
+        console.log(
+          `TASKCONTROLLER: Error sending ${status} status to TaskController: ${error}`
+        );
+        console.log(error.response.data);
+      })
+      .finally(callback);
+  }
 }
 
-function sendSuccessStatus(cloud_link, callback) {
-  // queue requires a callback
-  var params = {
-    type: "success",
-    worker: worker_name,
-    result: {
-      "cloud-link": cloud_link,
-    },
-  };
+function sendSuccessStatus(cloud_link, callback) {// queue requires a callback
+  if (task_id === undefined) {
+    console.log(`WARNING_DIRECT_SUBMISSION: No task_id found. Assuming direct submission. Success status NOT sent to Task Controller.`);
+    callback();
+  } else {
+    var params = {
+      type: "success",
+      worker: worker_name,
+      result: {
+        "cloud-link": cloud_link,
+      },
+    };
 
-  axios
-    .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
-    .then((response) => {
-      console.log(`TASKCONTROLLER: Success status sent to TaskController.`);
-    })
-    .catch((error) => {
-      console.log(
-        `TASKCONTROLLER: Error sending success status to TaskController: ${error}`
-      );
-    })
-    .finally(callback);
+    axios
+      .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
+      .then((response) => {
+        console.log(`TASKCONTROLLER: Success status sent to TaskController.`);
+      })
+      .catch((error) => {
+        console.log(
+          `TASKCONTROLLER: Error sending success status to TaskController: ${error}`
+        );
+      })
+      .finally(callback);
 
-  task_id = undefined;
+    task_id = undefined;
+  }
   isProcessing = false;
 }
 
-function sendFailureStatus(error_message, callback) {
-  // queue requires a callback
-  var params = {
-    type: "error",
-    worker: worker_name,
-    err_code: error_message,
-  };
+function sendFailureStatus(error_message, callback) {// queue requires a callback
+  if (task_id === undefined) {
+    console.log(`WARNING_DIRECT_SUBMISSION: No task_id found. Assuming direct submission. Failure status NOT sent to Task Controller.`);
+    callback();
+  } else {
+    var params = {
+      type: "error",
+      worker: worker_name,
+      err_code: error_message,
+    };
 
-  axios
-    .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
-    .then((response) => {
-      console.log(
-        `TASKCONTROLLER: Failure status ${error_message} sent to TaskController.`
-      );
-    })
-    .catch((error) => {
-      console.log(
-        `TASKCONTROLLER: Error sending failure status ${error_message} to TaskController: ${error}`
-      );
-    })
-    .finally(callback);
+    axios
+      .post(`${taskControllerEndpoint}/tasks/${task_id}/actions`, params)
+      .then((response) => {
+        console.log(
+          `TASKCONTROLLER: Failure status ${error_message} sent to TaskController.`
+        );
+      })
+      .catch((error) => {
+        console.log(
+          `TASKCONTROLLER: Error sending failure status ${error_message} to TaskController: ${error}`
+        );
+      })
+      .finally(callback);
 
-  task_id = undefined;
+    task_id = undefined;
+  }
   isProcessing = false;
   clearTimeout(decoderStartTimeout);
 }
@@ -590,6 +604,9 @@ app.post("/status", (req, res) => {
   const body = req.body;
 
   converted_filename = body.filename;
+  if (task_id === undefined) {
+    original_filename = converted_filename;
+  }
   var status = body.status;
   // var channel = body.channel
 
